@@ -239,10 +239,16 @@ const App = () => {
   const [showAddShop, setShowAddShop] = useState(false);
   const [shopDraft, setShopDraft] = useState({ name: "", note: "", price: "", currency: "JPY", photo: "" });
   const shopPhotoInputRef = useRef(null);
+  const [editingShopId, setEditingShopId] = useState(null);
+  const [editShopDraft, setEditShopDraft] = useState(null);
+  const [isUploadingEditShopPhoto, setIsUploadingEditShopPhoto] = useState(false);
 
   const [showAddExpense, setShowAddExpense] = useState(false);
   const [expenseDraft, setExpenseDraft] = useState({ item: "", amount: "", currency: "JPY", payer: "a", splitAmong: ALL, photo: "" });
   const [isUploadingExpensePhoto, setIsUploadingExpensePhoto] = useState(false);
+  const [editingExpenseId, setEditingExpenseId] = useState(null);
+  const [editExpenseDraft, setEditExpenseDraft] = useState(null);
+  const [isUploadingEditExpensePhoto, setIsUploadingEditExpensePhoto] = useState(false);
 
   // 注入日系手繪風字體
   useEffect(() => {
@@ -496,24 +502,6 @@ const App = () => {
     await commitUpdate(newData);
   };
 
-  const handleShopPhotoChange = async (e, itemId) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    setIsUploadingShopPhoto(itemId);
-    try {
-      const compressed = await compressImageFile(file);
-      const newData = deepClone(tripData);
-      const item = newData.shopping.find((x) => x.id === itemId);
-      item.photo = compressed;
-      await commitUpdate(newData);
-    } catch (err) {
-      alert("圖片處理失敗：" + err.message);
-    } finally {
-      setIsUploadingShopPhoto(null);
-      e.target.value = "";
-    }
-  };
-
   const handleNewShopPhotoChange = async (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -525,6 +513,43 @@ const App = () => {
       alert("圖片處理失敗：" + err.message);
     } finally {
       setIsUploadingShopPhoto(null);
+      e.target.value = "";
+    }
+  };
+
+  const openEditShop = (item) => {
+    setEditShopDraft({ ...item });
+    setEditingShopId(item.id);
+  };
+
+  const cancelEditShop = () => {
+    setEditingShopId(null);
+    setEditShopDraft(null);
+  };
+
+  const saveEditShop = async () => {
+    if (!editShopDraft.name.trim()) {
+      alert("請至少填寫品項名稱。");
+      return;
+    }
+    const newData = deepClone(tripData);
+    const idx = newData.shopping.findIndex((x) => x.id === editingShopId);
+    if (idx !== -1) newData.shopping[idx] = { ...editShopDraft };
+    const ok = await commitUpdate(newData);
+    if (ok) cancelEditShop();
+  };
+
+  const handleEditShopPhotoChange = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setIsUploadingEditShopPhoto(true);
+    try {
+      const compressed = await compressImageFile(file);
+      setEditShopDraft((d) => ({ ...d, photo: compressed }));
+    } catch (err) {
+      alert("圖片處理失敗：" + err.message);
+    } finally {
+      setIsUploadingEditShopPhoto(false);
       e.target.value = "";
     }
   };
@@ -578,6 +603,54 @@ const App = () => {
       alert("圖片處理失敗：" + err.message);
     } finally {
       setIsUploadingExpensePhoto(false);
+      e.target.value = "";
+    }
+  };
+
+  const openEditExpense = (exp) => {
+    setEditExpenseDraft({ ...exp, amount: String(exp.amount) });
+    setEditingExpenseId(exp.id);
+  };
+
+  const cancelEditExpense = () => {
+    setEditingExpenseId(null);
+    setEditExpenseDraft(null);
+  };
+
+  const toggleEditExpenseSplitMember = (id) => {
+    setEditExpenseDraft((d) => {
+      const has = d.splitAmong.includes(id);
+      return { ...d, splitAmong: has ? d.splitAmong.filter((x) => x !== id) : [...d.splitAmong, id] };
+    });
+  };
+
+  const saveEditExpense = async () => {
+    if (!editExpenseDraft.item.trim() || !editExpenseDraft.amount || Number(editExpenseDraft.amount) <= 0) {
+      alert("請填寫項目名稱與金額。");
+      return;
+    }
+    if (editExpenseDraft.splitAmong.length === 0) {
+      alert("請至少選一位分攤的人。");
+      return;
+    }
+    const newData = deepClone(tripData);
+    const idx = newData.expenses.findIndex((x) => x.id === editingExpenseId);
+    if (idx !== -1) newData.expenses[idx] = { ...editExpenseDraft, amount: Number(editExpenseDraft.amount) };
+    const ok = await commitUpdate(newData);
+    if (ok) cancelEditExpense();
+  };
+
+  const handleEditExpensePhotoChange = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setIsUploadingEditExpensePhoto(true);
+    try {
+      const compressed = await compressImageFile(file);
+      setEditExpenseDraft((d) => ({ ...d, photo: compressed }));
+    } catch (err) {
+      alert("圖片處理失敗：" + err.message);
+    } finally {
+      setIsUploadingEditExpensePhoto(false);
       e.target.value = "";
     }
   };
@@ -942,36 +1015,111 @@ const App = () => {
           <div className="mt-4 space-y-3">
             {(tripData.expenses || []).map((exp) => {
               const payer = memberById[exp.payer];
+              const isEditing = editingExpenseId === exp.id;
               return (
-                <div key={exp.id} className="bg-white rounded-2xl border border-[#ecdfc0] p-4 flex items-start gap-3">
-                  <div className="p-2 bg-[#f6efdc] rounded-xl shrink-0">
-                    <Receipt className="w-4 h-4 text-[#8b7f6a]" />
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="font-bold text-[#3a3226] text-sm">{exp.item}</span>
-                      <span className="font-bold text-[#c05a26] text-sm">¥{exp.amount.toLocaleString()}</span>
-                    </div>
-                    <div className="flex items-center gap-1.5 mt-1 text-[11px] text-[#8b7f6a]">
-                      {payer && <MemberDot member={payer} size={14} />}
-                      <span>{payer ? payer.name : "未指定"} 墊付</span>
-                      <span>・{exp.date}</span>
-                    </div>
-                    <div className="flex items-center gap-1 mt-1.5">
-                      <span className="text-[10px] text-[#8b7f6a]">分攤：</span>
-                      {(exp.splitAmong || []).map((id) => memberById[id] && <MemberDot key={id} member={memberById[id]} size={13} />)}
-                    </div>
-                    <div className="flex items-center gap-2 mt-2">
-                      {exp.photo && (
-                        <button onClick={() => setPreviewImageUrl(exp.photo)} className="flex items-center gap-1 text-[11px] text-[#4472ad]">
-                          <ImageIcon className="w-3.5 h-3.5" /> 查看收據
+                <div key={exp.id} className="bg-white rounded-2xl border border-[#ecdfc0] p-4">
+                  {isEditing ? (
+                    <div className="space-y-2">
+                      <input
+                        value={editExpenseDraft.item}
+                        onChange={(e) => setEditExpenseDraft((d) => ({ ...d, item: e.target.value }))}
+                        placeholder="項目名稱"
+                        className="w-full text-sm border border-[#ecdfc0] rounded-lg px-3 py-2"
+                      />
+                      <input
+                        value={editExpenseDraft.amount}
+                        onChange={(e) => setEditExpenseDraft((d) => ({ ...d, amount: e.target.value }))}
+                        placeholder="金額（日幣）"
+                        type="number"
+                        className="w-full text-sm border border-[#ecdfc0] rounded-lg px-3 py-2"
+                      />
+                      <div>
+                        <div className="text-[11px] text-[#8b7f6a] mb-1.5">誰墊付的？</div>
+                        <div className="flex gap-2">
+                          {members.map((m) => (
+                            <button
+                              key={m.id}
+                              onClick={() => setEditExpenseDraft((d) => ({ ...d, payer: m.id }))}
+                              className={`flex items-center gap-1 rounded-full pl-1 pr-2.5 py-1 border ${editExpenseDraft.payer === m.id ? "border-transparent" : "border-[#ecdfc0] opacity-40"}`}
+                              style={{ background: editExpenseDraft.payer === m.id ? m.color + "22" : "white" }}
+                            >
+                              <MemberDot member={m} size={16} />
+                              <span className="text-[11px]">{m.name}</span>
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                      <div>
+                        <div className="text-[11px] text-[#8b7f6a] mb-1.5">要分攤給誰？</div>
+                        <div className="flex gap-2">
+                          {members.map((m) => {
+                            const active = editExpenseDraft.splitAmong.includes(m.id);
+                            return (
+                              <button
+                                key={m.id}
+                                onClick={() => toggleEditExpenseSplitMember(m.id)}
+                                className={`flex items-center gap-1 rounded-full pl-1 pr-2.5 py-1 border ${active ? "border-transparent" : "border-[#ecdfc0] opacity-40"}`}
+                                style={{ background: active ? m.color + "22" : "white" }}
+                              >
+                                <MemberDot member={m} size={16} />
+                                <span className="text-[11px]">{m.name}</span>
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <label className="flex items-center gap-1 text-xs text-[#4472ad] cursor-pointer">
+                          <Camera className="w-4 h-4" /> {editExpenseDraft.photo ? "更換收據照片" : "拍下收據（選填）"}
+                          <input type="file" accept="image/*" className="hidden" onChange={handleEditExpensePhotoChange} />
+                        </label>
+                        {isUploadingEditExpensePhoto && <RefreshCw className="w-3 h-3 animate-spin text-[#8b7f6a]" />}
+                        {editExpenseDraft.photo && <img src={editExpenseDraft.photo} alt="" className="w-10 h-10 object-cover rounded-lg" />}
+                      </div>
+                      <div className="flex gap-2 pt-1">
+                        <button onClick={saveEditExpense} className="flex-1 bg-[#e8703a] text-white text-sm font-bold py-2 rounded-lg flex items-center justify-center gap-1">
+                          <Save className="w-3.5 h-3.5" /> 儲存
                         </button>
-                      )}
-                      <button onClick={() => deleteExpense(exp.id)} className="flex items-center gap-1 text-[11px] text-[#c14a3c] ml-auto">
-                        <Trash2 className="w-3 h-3" /> 刪除
-                      </button>
+                        <button onClick={cancelEditExpense} className="px-4 bg-[#f6efdc] text-[#8b7f6a] text-sm font-bold py-2 rounded-lg">
+                          取消
+                        </button>
+                      </div>
                     </div>
-                  </div>
+                  ) : (
+                    <div className="flex items-start gap-3">
+                      <div className="p-2 bg-[#f6efdc] rounded-xl shrink-0">
+                        <Receipt className="w-4 h-4 text-[#8b7f6a]" />
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="font-bold text-[#3a3226] text-sm">{exp.item}</span>
+                          <span className="font-bold text-[#c05a26] text-sm">¥{exp.amount.toLocaleString()}</span>
+                        </div>
+                        <div className="flex items-center gap-1.5 mt-1 text-[11px] text-[#8b7f6a]">
+                          {payer && <MemberDot member={payer} size={14} />}
+                          <span>{payer ? payer.name : "未指定"} 墊付</span>
+                          <span>・{exp.date}</span>
+                        </div>
+                        <div className="flex items-center gap-1 mt-1.5">
+                          <span className="text-[10px] text-[#8b7f6a]">分攤：</span>
+                          {(exp.splitAmong || []).map((id) => memberById[id] && <MemberDot key={id} member={memberById[id]} size={13} />)}
+                        </div>
+                        <div className="flex items-center gap-2 mt-2">
+                          {exp.photo && (
+                            <button onClick={() => setPreviewImageUrl(exp.photo)} className="flex items-center gap-1 text-[11px] text-[#4472ad]">
+                              <ImageIcon className="w-3.5 h-3.5" /> 查看收據
+                            </button>
+                          )}
+                          <button onClick={() => openEditExpense(exp)} className="flex items-center gap-1 text-[11px] text-[#8b7f6a]">
+                            <Edit3 className="w-3.5 h-3.5" /> 編輯
+                          </button>
+                          <button onClick={() => deleteExpense(exp.id)} className="flex items-center gap-1 text-[11px] text-[#c14a3c] ml-auto">
+                            <Trash2 className="w-3 h-3" /> 刪除
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  )}
                 </div>
               );
             })}
@@ -1064,38 +1212,77 @@ const App = () => {
         <div className="px-5 mt-5">
           <div className="space-y-3">
             {tripData.shopping.map((item) => (
-              <div key={item.id} className="bg-white rounded-2xl border border-[#ecdfc0] p-4 flex gap-3">
-                <button
-                  onClick={() => toggleShopChecked(item.id)}
-                  className={`w-6 h-6 rounded-full border-2 flex items-center justify-center shrink-0 mt-0.5 ${
-                    item.checked ? "bg-[#7fa06f] border-[#7fa06f]" : "border-[#d9a441]"
-                  }`}
-                >
-                  {item.checked && <Check className="w-3.5 h-3.5 text-white" />}
-                </button>
-                <div className="flex-1 min-w-0">
-                  <div className={`font-bold ${item.checked ? "line-through text-[#8b7f6a]" : "text-[#3a3226]"}`}>{item.name}</div>
-                  {item.note && <p className="text-xs text-[#8b7f6a] mt-0.5">{item.note}</p>}
-                  {item.price && (
-                    <p className="text-xs text-[#c05a26] mt-0.5 font-bold">
-                      ¥{item.price} {item.currency !== "JPY" && item.currency}
-                    </p>
-                  )}
-                  <div className="flex items-center gap-2 mt-2">
-                    <label className="flex items-center gap-1 text-[11px] text-[#4472ad] cursor-pointer">
-                      <Camera className="w-3.5 h-3.5" /> {item.photo ? "更換照片" : "新增照片"}
-                      <input type="file" accept="image/*" className="hidden" onChange={(e) => handleShopPhotoChange(e, item.id)} />
-                    </label>
-                    {isUploadingShopPhoto === item.id && <RefreshCw className="w-3 h-3 animate-spin text-[#8b7f6a]" />}
-                    <button onClick={() => deleteShopItem(item.id)} className="text-[11px] text-[#c14a3c] flex items-center gap-0.5 ml-auto">
-                      <Trash2 className="w-3 h-3" /> 刪除
-                    </button>
+              <div key={item.id} className="bg-white rounded-2xl border border-[#ecdfc0] p-4">
+                {editingShopId === item.id ? (
+                  <div className="space-y-2">
+                    <input
+                      value={editShopDraft.name}
+                      onChange={(e) => setEditShopDraft((d) => ({ ...d, name: e.target.value }))}
+                      placeholder="品項名稱"
+                      className="w-full text-sm border border-[#ecdfc0] rounded-lg px-3 py-2"
+                    />
+                    <input
+                      value={editShopDraft.note}
+                      onChange={(e) => setEditShopDraft((d) => ({ ...d, note: e.target.value }))}
+                      placeholder="備註（例如：藥妝、伴手禮）"
+                      className="w-full text-sm border border-[#ecdfc0] rounded-lg px-3 py-2"
+                    />
+                    <input
+                      value={editShopDraft.price}
+                      onChange={(e) => setEditShopDraft((d) => ({ ...d, price: e.target.value }))}
+                      placeholder="預算金額（日幣，可留空）"
+                      className="w-full text-sm border border-[#ecdfc0] rounded-lg px-3 py-2"
+                    />
+                    <div className="flex items-center gap-2">
+                      <label className="flex items-center gap-1 text-xs text-[#4472ad] cursor-pointer">
+                        <Camera className="w-4 h-4" /> {editShopDraft.photo ? "更換照片" : "加入參考照片"}
+                        <input type="file" accept="image/*" className="hidden" onChange={handleEditShopPhotoChange} />
+                      </label>
+                      {isUploadingEditShopPhoto && <RefreshCw className="w-3 h-3 animate-spin text-[#8b7f6a]" />}
+                      {editShopDraft.photo && <img src={editShopDraft.photo} alt="" className="w-10 h-10 object-cover rounded-lg" />}
+                    </div>
+                    <div className="flex gap-2 pt-1">
+                      <button onClick={saveEditShop} className="flex-1 bg-[#e8703a] text-white text-sm font-bold py-2 rounded-lg flex items-center justify-center gap-1">
+                        <Save className="w-3.5 h-3.5" /> 儲存
+                      </button>
+                      <button onClick={cancelEditShop} className="px-4 bg-[#f6efdc] text-[#8b7f6a] text-sm font-bold py-2 rounded-lg">
+                        取消
+                      </button>
+                    </div>
                   </div>
-                </div>
-                {item.photo && (
-                  <button onClick={() => setPreviewImageUrl(item.photo)} className="shrink-0">
-                    <img src={item.photo} alt={item.name} className="w-16 h-16 object-cover rounded-xl border border-[#ecdfc0]" />
-                  </button>
+                ) : (
+                  <div className="flex gap-3">
+                    <button
+                      onClick={() => toggleShopChecked(item.id)}
+                      className={`w-6 h-6 rounded-full border-2 flex items-center justify-center shrink-0 mt-0.5 ${
+                        item.checked ? "bg-[#7fa06f] border-[#7fa06f]" : "border-[#d9a441]"
+                      }`}
+                    >
+                      {item.checked && <Check className="w-3.5 h-3.5 text-white" />}
+                    </button>
+                    <div className="flex-1 min-w-0">
+                      <div className={`font-bold ${item.checked ? "line-through text-[#8b7f6a]" : "text-[#3a3226]"}`}>{item.name}</div>
+                      {item.note && <p className="text-xs text-[#8b7f6a] mt-0.5">{item.note}</p>}
+                      {item.price && (
+                        <p className="text-xs text-[#c05a26] mt-0.5 font-bold">
+                          ¥{item.price} {item.currency !== "JPY" && item.currency}
+                        </p>
+                      )}
+                      <div className="flex items-center gap-2 mt-2">
+                        <button onClick={() => openEditShop(item)} className="flex items-center gap-1 text-[11px] text-[#8b7f6a]">
+                          <Edit3 className="w-3.5 h-3.5" /> 編輯
+                        </button>
+                        <button onClick={() => deleteShopItem(item.id)} className="flex items-center gap-1 text-[11px] text-[#c14a3c] ml-auto">
+                          <Trash2 className="w-3 h-3" /> 刪除
+                        </button>
+                      </div>
+                    </div>
+                    {item.photo && (
+                      <button onClick={() => setPreviewImageUrl(item.photo)} className="shrink-0">
+                        <img src={item.photo} alt={item.name} className="w-16 h-16 object-cover rounded-xl border border-[#ecdfc0]" />
+                      </button>
+                    )}
+                  </div>
                 )}
               </div>
             ))}
