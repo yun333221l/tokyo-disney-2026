@@ -1,3 +1,4 @@
+"use client";
 
 import React, { useState, useEffect, useRef } from "react";
 import { createClient } from "@supabase/supabase-js";
@@ -228,6 +229,8 @@ const App = () => {
   const [activeTab, setActiveTab] = useState("itinerary"); // itinerary | shopping | members
   const [tripData, setTripData] = useState(null);
   const [selectedDay, setSelectedDay] = useState(1);
+  const [dayDraft, setDayDraft] = useState({ theme: "", hotel: "" });
+  const [memberNameDrafts, setMemberNameDrafts] = useState({});
   const [daysLeft, setDaysLeft] = useState(0);
   const [editingSpotKey, setEditingSpotKey] = useState(null); // `${day}-${idx}` or 'new'
   const [spotDraft, setSpotDraft] = useState(null);
@@ -258,6 +261,22 @@ const App = () => {
     const diffDays = Math.ceil((targetDate - today) / (1000 * 60 * 60 * 24));
     setDaysLeft(diffDays > 0 ? diffDays : 0);
   }, []);
+
+  // 只在「切換日期」或「資料第一次載入」時，把主題/住宿同步進本地暫存欄位，
+  // 打字過程中絕對不會被雲端資料蓋掉，避免中斷注音輸入。
+  useEffect(() => {
+    if (!tripData) return;
+    const d = tripData.itinerary.find((x) => x.day === selectedDay);
+    setDayDraft({ theme: d?.theme || "", hotel: d?.hotel || "" });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedDay, !!tripData]);
+
+  // 成員名字也是同樣道理，只在第一次資料載入時同步一次
+  useEffect(() => {
+    if (!tripData) return;
+    setMemberNameDrafts(Object.fromEntries(tripData.meta.members.map((m) => [m.id, m.name])));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [!!tripData]);
 
   // ==========================================
   // Supabase 資料讀取、即時同步與安全初始化
@@ -749,8 +768,9 @@ const App = () => {
           {currentDay && (
             <div className="mt-4">
               <input
-                value={currentDay.theme}
-                onChange={(e) => updateDayField("theme", e.target.value)}
+                value={dayDraft.theme}
+                onChange={(e) => setDayDraft((d) => ({ ...d, theme: e.target.value }))}
+                onBlur={() => updateDayField("theme", dayDraft.theme)}
                 placeholder="這天的主題"
                 className="text-lg font-bold bg-transparent border-b border-dashed border-[#d9a441]/50 focus:outline-none w-full py-1"
                 style={{ fontFamily: "'LXGW WenKai TC',serif" }}
@@ -758,8 +778,9 @@ const App = () => {
               <div className="flex items-center gap-1.5 mt-2">
                 <BedDouble className="w-3.5 h-3.5 text-[#8b7f6a] shrink-0" />
                 <input
-                  value={currentDay.hotel}
-                  onChange={(e) => updateDayField("hotel", e.target.value)}
+                  value={dayDraft.hotel}
+                  onChange={(e) => setDayDraft((d) => ({ ...d, hotel: e.target.value }))}
+                  onBlur={() => updateDayField("hotel", dayDraft.hotel)}
                   placeholder="今晚住宿（飯店名稱 / 地址，選填）"
                   className="text-xs text-[#5b5344] bg-transparent border-b border-dashed border-[#ecdfc0] focus:outline-none focus:border-[#d9a441] w-full py-1"
                 />
@@ -1146,8 +1167,9 @@ const App = () => {
               <div className="flex items-center gap-2 mb-3">
                 <MemberDot member={m} size={28} />
                 <input
-                  value={m.name}
-                  onChange={(e) => updateMember(m.id, "name", e.target.value)}
+                  value={memberNameDrafts[m.id] ?? m.name}
+                  onChange={(e) => setMemberNameDrafts((d) => ({ ...d, [m.id]: e.target.value }))}
+                  onBlur={() => updateMember(m.id, "name", memberNameDrafts[m.id] ?? m.name)}
                   className="font-bold text-[#3a3226] border-b border-dashed border-[#d9a441]/50 focus:outline-none flex-1"
                 />
               </div>
