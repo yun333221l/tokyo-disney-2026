@@ -45,6 +45,47 @@ const IMAGE_QUALITY = 0.75; // JPEG 壓縮品質
 
 const deepClone = (obj) => JSON.parse(JSON.stringify(obj));
 
+// ==========================================
+// 幣別：支出可用日幣或台幣輸入，結算一律換算成台幣
+// ==========================================
+const JPY_TO_TWD = 0.21; // 1 日幣 = 0.21 台幣（要調整匯率改這裡即可）
+const toTwd = (exp) => (exp.currency === "TWD" ? Number(exp.amount) : Number(exp.amount) * JPY_TO_TWD);
+const fmtTwd = (n) => `NT$${Math.round(n).toLocaleString()}`;
+
+// ==========================================
+// 天氣（Open-Meteo 免費、免金鑰，出發前約 16 天內才有預報）
+// ==========================================
+const WEATHER_LOCATIONS = {
+  tokyo: { name: "東京", lat: 35.6895, lon: 139.6917 },
+  atami: { name: "熱海", lat: 35.0964, lon: 139.0717 },
+};
+const tripDateOf = (day) => `2026-12-${String(2 + day).padStart(2, "0")}`; // Day1 = 12/3
+
+const weatherInfo = (code) => {
+  if (code === 0) return { icon: "☀️", label: "晴" };
+  if (code <= 2) return { icon: "🌤️", label: "晴時多雲" };
+  if (code === 3) return { icon: "☁️", label: "陰" };
+  if (code === 45 || code === 48) return { icon: "🌫️", label: "霧" };
+  if (code >= 51 && code <= 57) return { icon: "🌦️", label: "毛毛雨" };
+  if ((code >= 61 && code <= 67) || (code >= 80 && code <= 82)) return { icon: "🌧️", label: "下雨" };
+  if ((code >= 71 && code <= 77) || code === 85 || code === 86) return { icon: "🌨️", label: "下雪" };
+  if (code >= 95) return { icon: "⛈️", label: "雷雨" };
+  return { icon: "🌡️", label: "—" };
+};
+
+const clothingAdvice = (w, windy) => {
+  const tips = [];
+  if (w.max >= 20) tips.push("短袖或薄長袖＋薄外套");
+  else if (w.max >= 15) tips.push("長袖＋薄外套或針織衫");
+  else if (w.max >= 10) tips.push("毛衣／針織＋厚外套");
+  else tips.push("羽絨或厚大衣＋圍巾手套");
+  if (w.min <= 6) tips.push("早晚偏冷，建議帶暖暖包");
+  if (windy) tips.push("海邊風大，加一件防風外套");
+  if (w.rain >= 50) tips.push("降雨機率高，帶折疊傘或雨衣");
+  else if (w.rain >= 30) tips.push("可能下雨，包包放把折疊傘");
+  return tips;
+};
+
 const getUsageInfo = (data) => {
   if (!data) return { bytes: 0, percent: 0, remainingBytes: MAX_DOC_BYTES };
   const bytes = new Blob([JSON.stringify(data)]).size;
@@ -215,6 +256,30 @@ const CapacityBar = ({ usage }) => {
   );
 };
 
+const CurrencyToggle = ({ value, onChange, amount }) => {
+  const n = Number(amount);
+  return (
+    <div className="flex items-center gap-2">
+      <div className="flex rounded-lg overflow-hidden border border-[#ecdfc0] shrink-0">
+        {[
+          { id: "JPY", label: "日幣 ¥" },
+          { id: "TWD", label: "台幣 NT$" },
+        ].map((c) => (
+          <button
+            key={c.id}
+            type="button"
+            onClick={() => onChange(c.id)}
+            className={`px-3 py-1.5 text-xs font-bold ${value === c.id ? "bg-[#e8703a] text-white" : "bg-white text-[#8b7f6a]"}`}
+          >
+            {c.label}
+          </button>
+        ))}
+      </div>
+      {value === "JPY" && n > 0 && <span className="text-[11px] text-[#8b7f6a]">≈ {fmtTwd(n * JPY_TO_TWD)}</span>}
+    </div>
+  );
+};
+
 const MemberDot = ({ member, size = 18 }) => (
   <div
     className="rounded-full flex items-center justify-center text-white font-bold shrink-0"
@@ -229,6 +294,9 @@ const App = () => {
   const [activeTab, setActiveTab] = useState("itinerary"); // itinerary | shopping | members
   const [tripData, setTripData] = useState(null);
   const [selectedDay, setSelectedDay] = useState(1);
+  const [loadError, setLoadError] = useState(null);
+  const [weather, setWeather] = useState({}); // { tokyo: {date: {...}}, atami: {...} }
+  const [weatherStatus, setWeatherStatus] = useState("loading"); // loading | ok | error
   const [dayDraft, setDayDraft] = useState({ theme: "", hotel: "" });
   const [memberNameDrafts, setMemberNameDrafts] = useState({});
   const [daysLeft, setDaysLeft] = useState(0);
@@ -258,6 +326,44 @@ const App = () => {
       "https://fonts.googleapis.com/css2?family=LXGW+WenKai+TC:wght@400;700&family=Zen+Maru+Gothic:wght@400;500;700;900&family=Noto+Sans+TC:wght@300;400;500;700&display=swap";
     document.head.appendChild(link);
     return () => document.head.removeChild(link);
+  }, []);
+
+  // 天氣預報：東京＋熱海，各抓一次（Open-Meteo，免金鑰）
+  useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const entries = await Promise.all(
+          Object.entries(WEATHER_LOCATIONS).map(async ([key, loc]) => {
+            const url = `https://api.open-meteo.com/v1/forecast?latitude=${loc.lat}&longitude=${loc.lon}&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max&timezone=Asia%2FTokyo&forecast_days=16`;
+            const res = await fetch(url);
+            if (!res.ok) throw new Error("weather http " + res.status);
+            const json = await res.json();
+            const byDate = {};
+            json.daily.time.forEach((t, i) => {
+              byDate[t] = {
+                code: json.daily.weather_code[i],
+                max: Math.round(json.daily.temperature_2m_max[i]),
+                min: Math.round(json.daily.temperature_2m_min[i]),
+                rain: json.daily.precipitation_probability_max[i] ?? 0,
+              };
+            });
+            return [key, byDate];
+          })
+        );
+        if (!cancelled) {
+          setWeather(Object.fromEntries(entries));
+          setWeatherStatus("ok");
+        }
+      } catch (e) {
+        console.error("天氣讀取失敗：", e);
+        if (!cancelled) setWeatherStatus("error");
+      }
+    };
+    load();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   // 倒數天數（2026-12-03 出發）
@@ -320,13 +426,17 @@ const App = () => {
         if (row && row.data) {
           setTripData(normalizeData(row.data));
         } else {
-          setTripData(fallbackData);
-          const { error: upsertError } = await supabase.from("trip").upsert({ id: tripId, data: fallbackData });
+          // 只在「確定雲端真的沒有這筆資料」時建立；ignoreDuplicates 確保絕不會覆蓋既有資料
+          const { error: upsertError } = await supabase
+            .from("trip")
+            .upsert({ id: tripId, data: fallbackData }, { onConflict: "id", ignoreDuplicates: true });
           if (upsertError) throw upsertError;
+          setTripData(fallbackData);
         }
       } catch (err) {
-        console.error("Supabase 讀取或初始化失敗，已啟用本地資料防護：", err);
-        if (isMounted) setTripData(fallbackData);
+        // 讀取失敗時不再顯示範例資料（避免有人在假資料上編輯、把雲端真實資料蓋掉）
+        console.error("Supabase 讀取失敗：", err);
+        if (isMounted) setLoadError(err?.message || String(err));
       }
     };
 
@@ -387,6 +497,23 @@ const App = () => {
     return true;
   };
 
+  if (!tripData && loadError) {
+    return (
+      <div className="min-h-screen flex flex-col items-center justify-center bg-[#f6efdc] gap-3 px-8 text-center">
+        <p className="text-[#c14a3c] font-bold">暫時連不上雲端資料庫</p>
+        <p className="text-[#8b7f6a] text-xs leading-relaxed">
+          為了保護你們的行程資料，這時候不會顯示、也不允許編輯。
+          <br />
+          可能是網路不穩，或 Supabase 免費專案休眠中（到 Supabase 後台按 Restore project）。
+        </p>
+        <p className="text-[10px] text-[#b3a78f] break-all">{loadError}</p>
+        <button onClick={() => window.location.reload()} className="mt-2 bg-[#e8703a] text-white text-sm font-bold px-5 py-2 rounded-lg">
+          重新連線
+        </button>
+      </div>
+    );
+  }
+
   if (!tripData) {
     return (
       <div className="min-h-screen flex flex-col items-center justify-center bg-[#f6efdc] gap-3">
@@ -401,6 +528,23 @@ const App = () => {
   const usage = getUsageInfo(tripData);
   const currentDay = tripData.itinerary.find((d) => d.day === selectedDay);
   const membersPresentToday = members.filter((m) => selectedDay >= m.startDay && selectedDay <= m.endDay);
+
+  const dayText = (day) => `${day.theme || ""} ${(day.spots || []).map((s) => s.title).join(" ")}`;
+  const weatherForDay = (day) => {
+    const key = dayText(day).includes("熱海") ? "atami" : "tokyo";
+    const w = weather[key]?.[tripDateOf(day.day)];
+    return w ? { ...w, loc: WEATHER_LOCATIONS[key].name } : null;
+  };
+
+  const exportBackup = () => {
+    const blob = new Blob([JSON.stringify(tripData, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `tokyo-disney-backup-${new Date().toISOString().slice(0, 10)}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
 
   // ---------- 行程 CRUD ----------
   const openNewSpotForm = () => {
@@ -580,7 +724,7 @@ const App = () => {
     });
     const ok = await commitUpdate(newData);
     if (ok) {
-      setExpenseDraft({ item: "", amount: "", currency: "JPY", payer: expenseDraft.payer, splitAmong: ALL, photo: "" });
+      setExpenseDraft({ item: "", amount: "", currency: expenseDraft.currency, payer: expenseDraft.payer, splitAmong: ALL, photo: "" });
       setShowAddExpense(false);
     }
   };
@@ -660,8 +804,9 @@ const App = () => {
     const balances = Object.fromEntries(members.map((m) => [m.id, 0]));
     (tripData.expenses || []).forEach((exp) => {
       const among = exp.splitAmong && exp.splitAmong.length ? exp.splitAmong : ALL;
-      const share = exp.amount / among.length;
-      if (balances[exp.payer] !== undefined) balances[exp.payer] += exp.amount;
+      const twd = toTwd(exp);
+      const share = twd / among.length;
+      if (balances[exp.payer] !== undefined) balances[exp.payer] += twd;
       among.forEach((id) => {
         if (balances[id] !== undefined) balances[id] -= share;
       });
@@ -669,7 +814,7 @@ const App = () => {
     return balances;
   };
   const balances = computeBalances();
-  const totalExpense = (tripData.expenses || []).reduce((sum, e) => sum + e.amount, 0);
+  const totalExpense = (tripData.expenses || []).reduce((sum, e) => sum + toTwd(e), 0);
 
   // 債務簡化：把「應收/應付」兩兩配對，算出最少轉帳次數的建議
   const computeSettlements = (balanceMap) => {
@@ -832,6 +977,14 @@ const App = () => {
                       <MemberDot key={m.id} member={m} size={12} />
                     ))}
                   </div>
+                  {(() => {
+                    const w = weatherForDay(d);
+                    return w ? (
+                      <div className={`text-[10px] mt-1 ${active ? "text-[#e7e0cf]" : "text-[#8b7f6a]"}`}>
+                        {weatherInfo(w.code).icon} {w.max}°/{w.min}°
+                      </div>
+                    ) : null;
+                  })()}
                 </button>
               );
             })}
@@ -870,6 +1023,47 @@ const App = () => {
                 ))}
                 {membersPresentToday.length === 0 && <span className="text-[11px] text-[#c14a3c]">目前沒有人設定在這一天喔，請到「成員設定」調整</span>}
               </div>
+
+              {/* 天氣與穿搭 */}
+              {(() => {
+                const w = weatherForDay(currentDay);
+                if (!w) {
+                  return (
+                    <div className="mt-3 rounded-2xl border border-dashed border-[#ecdfc0] px-4 py-3 text-[11px] text-[#8b7f6a]">
+                      {weatherStatus === "loading"
+                        ? "天氣載入中…"
+                        : weatherStatus === "error"
+                        ? "暫時抓不到天氣預報，稍後重新整理看看。"
+                        : "這天的預報還沒開放（出發前約 16 天內會自動顯示）。"}
+                    </div>
+                  );
+                }
+                const info = weatherInfo(w.code);
+                const windy = /海|熱海/.test(dayText(currentDay));
+                const tips = clothingAdvice(w, windy);
+                return (
+                  <div className="mt-3 rounded-2xl bg-white border border-[#ecdfc0] px-4 py-3">
+                    <div className="flex items-center gap-3">
+                      <span className="text-3xl leading-none">{info.icon}</span>
+                      <div className="flex-1">
+                        <div className="text-sm font-bold text-[#3a3226]">
+                          {w.loc}・{info.label}
+                        </div>
+                        <div className="text-xs text-[#8b7f6a] mt-0.5">
+                          最高 {w.max}°C／最低 {w.min}°C・降雨機率 {w.rain}%
+                        </div>
+                      </div>
+                    </div>
+                    <ul className="mt-2 space-y-0.5">
+                      {tips.map((t) => (
+                        <li key={t} className="text-xs text-[#5b5344]">
+                          👕 {t}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                );
+              })()}
 
               {/* spots */}
               <div className="mt-4 space-y-3">
@@ -963,7 +1157,7 @@ const App = () => {
               <h3 className="text-sm font-bold text-[#3a3226] flex items-center gap-1.5">
                 <Banknote className="w-4 h-4 text-[#7fa06f]" /> 目前結算
               </h3>
-              <span className="text-[11px] text-[#8b7f6a]">總支出 ¥{totalExpense.toLocaleString()}</span>
+              <span className="text-[11px] text-[#8b7f6a]">總支出 {fmtTwd(totalExpense)}</span>
             </div>
             <div className="grid grid-cols-3 gap-2">
               {members.map((m) => {
@@ -977,14 +1171,14 @@ const App = () => {
                     </div>
                     <div className="text-[11px] text-[#8b7f6a]">{m.name}</div>
                     <div className={`text-xs font-bold mt-0.5 ${zero ? "text-[#8b7f6a]" : positive ? "text-[#4f9d69]" : "text-[#c14a3c]"}`}>
-                      {zero ? "打平" : positive ? `應收 ¥${b.toLocaleString()}` : `應付 ¥${Math.abs(b).toLocaleString()}`}
+                      {zero ? "打平" : positive ? `應收 ${fmtTwd(b)}` : `應付 ${fmtTwd(Math.abs(b))}`}
                     </div>
                   </div>
                 );
               })}
             </div>
             <p className="text-[10px] text-[#8b7f6a] mt-2.5 leading-relaxed" style={{ fontFamily: "'Zen Maru Gothic',sans-serif" }}>
-              「應收」表示這個人先墊了比較多錢，其他人之後要補給他；「應付」則反過來。
+              「應收」表示這個人先墊了比較多錢，其他人之後要補給他；「應付」則反過來。日幣支出以 1 日幣 = {JPY_TO_TWD} 台幣換算，結算一律用台幣收款。
             </p>
           </div>
 
@@ -1004,7 +1198,7 @@ const App = () => {
                       <span className="text-[#8b7f6a]">付給</span>
                       {to && <MemberDot member={to} size={16} />}
                       <span className="font-bold text-[#3a3226]">{to?.name}</span>
-                      <span className="ml-auto font-bold text-[#c05a26]">¥{s.amount.toLocaleString()}</span>
+                      <span className="ml-auto font-bold text-[#c05a26]">{fmtTwd(s.amount)}</span>
                     </div>
                   );
                 })}
@@ -1029,9 +1223,15 @@ const App = () => {
                       <input
                         value={editExpenseDraft.amount}
                         onChange={(e) => setEditExpenseDraft((d) => ({ ...d, amount: e.target.value }))}
-                        placeholder="金額（日幣）"
+                        placeholder="金額"
                         type="number"
+                        inputMode="decimal"
                         className="w-full text-sm border border-[#ecdfc0] rounded-lg px-3 py-2"
+                      />
+                      <CurrencyToggle
+                        value={editExpenseDraft.currency || "JPY"}
+                        onChange={(c) => setEditExpenseDraft((d) => ({ ...d, currency: c }))}
+                        amount={editExpenseDraft.amount}
                       />
                       <div>
                         <div className="text-[11px] text-[#8b7f6a] mb-1.5">誰墊付的？</div>
@@ -1093,7 +1293,10 @@ const App = () => {
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center justify-between gap-2">
                           <span className="font-bold text-[#3a3226] text-sm">{exp.item}</span>
-                          <span className="font-bold text-[#c05a26] text-sm">¥{exp.amount.toLocaleString()}</span>
+                          <span className="font-bold text-[#c05a26] text-sm text-right">
+                            {exp.currency === "TWD" ? fmtTwd(exp.amount) : `¥${Number(exp.amount).toLocaleString()}`}
+                            {exp.currency !== "TWD" && <span className="block text-[10px] font-normal text-[#8b7f6a]">≈ {fmtTwd(toTwd(exp))}</span>}
+                          </span>
                         </div>
                         <div className="flex items-center gap-1.5 mt-1 text-[11px] text-[#8b7f6a]">
                           {payer && <MemberDot member={payer} size={14} />}
@@ -1139,9 +1342,15 @@ const App = () => {
               <input
                 value={expenseDraft.amount}
                 onChange={(e) => setExpenseDraft((d) => ({ ...d, amount: e.target.value }))}
-                placeholder="金額（日幣）"
+                placeholder="金額"
                 type="number"
+                inputMode="decimal"
                 className="w-full text-sm border border-[#ecdfc0] rounded-lg px-3 py-2"
+              />
+              <CurrencyToggle
+                value={expenseDraft.currency}
+                onChange={(c) => setExpenseDraft((d) => ({ ...d, currency: c }))}
+                amount={expenseDraft.amount}
               />
               <div>
                 <div className="text-[11px] text-[#8b7f6a] mb-1.5">誰墊付的？</div>
@@ -1386,6 +1595,20 @@ const App = () => {
               </div>
             </div>
           ))}
+        </div>
+      )}
+
+      {activeTab === "members" && (
+        <div className="px-5 mt-4">
+          <button
+            onClick={exportBackup}
+            className="w-full flex items-center justify-center gap-1.5 py-3 rounded-2xl border border-[#ecdfc0] bg-white text-[#5b5344] text-sm font-bold"
+          >
+            <Save className="w-4 h-4" /> 匯出備份（下載 JSON）
+          </button>
+          <p className="text-[10px] text-[#8b7f6a] mt-1.5 leading-relaxed">
+            建議出發前、以及大改行程後各按一次存檔。萬一雲端資料出問題，把檔案給我就能幫你還原。
+          </p>
         </div>
       )}
 
